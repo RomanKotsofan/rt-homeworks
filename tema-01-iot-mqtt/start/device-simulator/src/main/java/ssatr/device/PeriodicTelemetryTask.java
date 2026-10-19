@@ -1,5 +1,8 @@
 package ssatr.device;
 
+import java.util.Locale;
+import java.util.concurrent.TimeUnit;
+
 import java.util.concurrent.BlockingQueue;
 
 /**
@@ -29,25 +32,50 @@ public class PeriodicTelemetryTask implements Runnable {
         this.alarmEvents = alarmEvents;
     }
 
+
     @Override
     public void run() {
-        // TODO 1: implementați bucla taskului periodic. Fiecare job:
-        //   - citiți temperatura: sensor.read()
-        //   - publicați pe Config.telemetryTopic(deviceId) mesajul "deviceId;timestamp;temperatura"
-        //     (timestamp = System.currentTimeMillis(); temperatura cu punct zecimal,
-        //      de ex. String.format(Locale.US, "%.2f", t), ca să poată fi citită
-        //      cu Double.parseDouble în business-service)
-        //   - dacă temperatura > threshold, puneți valoarea în coada alarmEvents
-        //
-        // Folosiți așteptare absolută, nu relativă: Thread.sleep(periodMs) după
-        // fiecare job duce la derivă (perioada reală devine T + C + întârzieri).
-        // Calculați eliberarea următorului job pe grilă (next = next + periodMs)
-        // și așteptați doar cât a mai rămas până la ea. Pentru grilă folosiți
-        // un timp monoton: System.nanoTime().
-        //
-        // periodMs se poate schimba în timpul rulării (comanda SET_INTERVAL),
-        // deci citiți-l la fiecare job.
+        long nextRelease = System.nanoTime();
+
+        try {
+            while (!Thread.currentThread().isInterrupted()) {
+
+                // Asteptare absoluta pana la urmatoarea eliberare
+                long remaining = nextRelease - System.nanoTime();
+
+                if (remaining > 0) {
+                    TimeUnit.NANOSECONDS.sleep(remaining);
+                }
+
+                // Citirea senzorului
+                double temperature = sensor.read();
+                long timestamp = System.currentTimeMillis();
+
+                // Construirea mesajului MQTT
+                String message = String.format(
+                        Locale.US,
+                        "%s;%d;%.2f",
+                        deviceId, timestamp, temperature
+                );
+
+                // Publicarea telemetriei
+                mqtt.publish(Config.telemetryTopic(deviceId), message);
+
+                System.out.println("[PERIODIC] " + message);
+
+                // Trimiterea evenimentului catre taskul sporadic
+                if (temperature > threshold) {
+                    alarmEvents.put(temperature);
+                }
+
+                // Urmatoarea eliberare pe grila periodica
+                nextRelease += TimeUnit.MILLISECONDS.toNanos(periodMs);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
+
 
     public void setPeriodMs(long periodMs) {
         this.periodMs = periodMs;

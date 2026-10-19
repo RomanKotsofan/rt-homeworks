@@ -1,15 +1,13 @@
+
 package ssatr.device;
 
+import java.util.Locale;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.TimeUnit;
 
 /**
- * TASK SPORADIC: tratează alarmele de temperatură.
- *
- * Evenimentele sosesc în coada alarmEvents (puse de taskul periodic).
- * Intervalul minim între sosiri este MIN_INTERARRIVAL_MS: între două eliberări
- * ale taskului (două alarme publicate) trebuie să treacă cel puțin atât.
- * Intervalul este impus de cod: evenimentele care sosesc mai des sunt
- * respinse, ca să nu fie inundat brokerul.
+ * TASK SPORADIC: trateaza alarmele de temperatura.
+ * Interval minim intre alarme: 5000 ms.
  */
 public class SporadicAlarmTask implements Runnable {
 
@@ -18,24 +16,71 @@ public class SporadicAlarmTask implements Runnable {
     private final String deviceId;
     private final MqttConnection mqtt;
     private final BlockingQueue<Double> alarmEvents;
+    private final PeriodicTelemetryTask periodic;
 
-    public SporadicAlarmTask(String deviceId, MqttConnection mqtt, BlockingQueue<Double> alarmEvents) {
+    public SporadicAlarmTask(
+            String deviceId,
+            MqttConnection mqtt,
+            BlockingQueue<Double> alarmEvents,
+            PeriodicTelemetryTask periodic) {
+
         this.deviceId = deviceId;
         this.mqtt = mqtt;
         this.alarmEvents = alarmEvents;
+        this.periodic = periodic;
     }
 
     @Override
     public void run() {
-        // TODO 2: implementați taskul sporadic:
-        //   - așteptați un eveniment: alarmEvents.take()
-        //   - dacă de la ultima eliberare au trecut mai puțin de
-        //     MIN_INTERARRIVAL_MS, respingeți evenimentul (afișați un mesaj)
-        //   - altfel publicați pe Config.alarmTopic(deviceId) mesajul
-        //     "deviceId;timestamp;temperatura;prag"
-        //     (pragul curent poate fi transmis împreună cu temperatura sau
-        //      citit din PeriodicTelemetryTask; alegeți și justificați în raport)
-        //
-        // Vezi exemplul exemple/01-taskuri/.../SporadicTaskExample.java
+        long lastAlarmTime = 0;
+        boolean firstAlarm = true;
+
+        try {
+            while (!Thread.currentThread().isInterrupted()) {
+
+                // Asteptam un eveniment din coada
+                double temperature = alarmEvents.take();
+
+                long now = System.nanoTime();
+
+                // Verificam intervalul minim dintre alarme
+                if (!firstAlarm &&
+                        now - lastAlarmTime <
+                                TimeUnit.MILLISECONDS.toNanos(MIN_INTERARRIVAL_MS)) {
+
+                    System.out.println(
+                            "[SPORADIC] Eveniment respins: interval prea scurt"
+                    );
+                    continue;
+                }
+
+                firstAlarm = false;
+                lastAlarmTime = now;
+
+                // Citim pragul actual din taskul periodic
+                double threshold = periodic.getThreshold();
+
+                // Construim mesajul MQTT
+                long timestamp = System.currentTimeMillis();
+
+                String message = String.format(
+                        Locale.US,
+                        "%s;%d;%.2f;%.2f",
+                        deviceId,
+                        timestamp,
+                        temperature,
+                        threshold
+                );
+
+                // Publicam alarma
+                mqtt.publish(Config.alarmTopic(deviceId), message);
+
+                System.out.println("[SPORADIC] " + message);
+            }
+
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 }
+
